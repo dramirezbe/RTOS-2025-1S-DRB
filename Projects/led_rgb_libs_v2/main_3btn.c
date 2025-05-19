@@ -105,7 +105,8 @@ void app_main(void) {
     isr_io_config(BTN_G, true, true, false, GPIO_INTR_NEGEDGE);
     isr_io_config(BTN_B, true, true, false, GPIO_INTR_NEGEDGE);
     
-    gpio_install_isr_service(0);
+    gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1 | ESP_INTR_FLAG_EDGE | ESP_INTR_FLAG_IRAM);
+
     gpio_isr_handler_add(BTN_R, gpio_isr_handler, (void*) BTN_R);
     gpio_isr_handler_add(BTN_G, gpio_isr_handler, (void*) BTN_G);
     gpio_isr_handler_add(BTN_B, gpio_isr_handler, (void*) BTN_B);
