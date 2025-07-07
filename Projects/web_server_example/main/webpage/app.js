@@ -10,6 +10,7 @@
 var seconds = null;
 var otaTimerVar = null;
 var wifiConnectInterval = null;
+var uart_on = true;
 
 /**
  * Initializes functions when the DOM is ready.
@@ -30,9 +31,17 @@ $(document).ready(function() {
     $("#toogle_led").on("click", function() {
         toogle_led();
     });
-    // $("#apagar_uart").on("click", function(){ // Commented out: UART control not currently used
-    //     turn_off_uart();
-    // });
+
+    // Initialize UART button state and attach click handler
+    const uartButton = $("#apagar_uart");
+    if (uart_on) {
+        uartButton.val("UART On").css("background-color", "green");
+    } else {
+        uartButton.val("UART Off").css("background-color", "red");
+    }
+    uartButton.on("click", function(){
+        toggle_uart();
+    });
     
     // $("#send_temp_threshold").on("click", function(){ // Commented out: Temperature threshold functionality not implemented yet
     //     // add functionality for temp threshold
@@ -184,18 +193,31 @@ function send_rgb_values() {
     });
 }
 
-/**
- * Commented out: Function to turn off UART, as it is not currently in use.
- *
- * function turn_off_uart() {
- * $.ajax({
- * url: '/uart_off.json',
- * dataType: 'json',
- * method: 'POST',
- * cache: false,
- * });
- * }
- */
+function toggle_uart() {
+    uart_on = !uart_on; // Toggle the boolean flag
+    const uartButton = $("#apagar_uart");
+
+    if (uart_on) {
+        uartButton.val("UART On").css("background-color", "green");
+        console.log("UART is ON");
+    } else {
+        uartButton.val("UART Off").css("background-color", "red");
+        console.log("UART is OFF");
+    }
+
+    // Send the UART status to the ESP32
+    $.ajax({
+        url: '/toogle_uart.json',
+        contentType: 'application/json',
+        method: 'POST',
+        cache: false,
+        data: JSON.stringify({ 'uart_on': uart_on }) // Send the boolean status
+    }).done(function() {
+        console.log("UART status sent successfully: " + uart_on);
+    }).fail(function(jqXHR, textStatus, errorThrown) {
+        console.error("Error sending UART status:", textStatus, errorThrown);
+    });
+}
 
 /**
  * Toggles the board LED by sending a POST request to the ESP32.

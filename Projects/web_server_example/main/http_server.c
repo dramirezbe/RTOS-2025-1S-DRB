@@ -20,7 +20,7 @@
 static const char TAG[] = "http_server";
 
 // Firmware update status
-static int g_fw_update_status = OTA_UPDATE_PENDING;
+//static int g_fw_update_status = OTA_UPDATE_PENDING;
 
 // HTTP server task handle
 static httpd_handle_t http_server_handle = NULL;
@@ -34,8 +34,7 @@ static QueueHandle_t http_server_monitor_queue_handle;
 static uint8_t s_led_state = 0;
 
 /**
- * ESP32 timer configuration passed to esp_timer_create.
- */
+
 const esp_timer_create_args_t fw_update_reset_args = {
 		.callback = &http_server_fw_update_reset_callback,
 		.arg = NULL,
@@ -43,6 +42,7 @@ const esp_timer_create_args_t fw_update_reset_args = {
 		.name = "fw_update_reset"
 };
 esp_timer_handle_t fw_update_reset;
+*/
 
 // Embedded files: JQuery, index.html, app.css, app.js and favicon.ico files
 extern const uint8_t jquery_3_3_1_min_js_start[]	asm("_binary_jquery_3_3_1_min_js_start");
@@ -57,8 +57,6 @@ extern const uint8_t favicon_ico_start[]			asm("_binary_favicon_ico_start");
 extern const uint8_t favicon_ico_end[]				asm("_binary_favicon_ico_end");
 
 /**
- * Checks the g_fw_update_status and creates the fw_update_reset timer if g_fw_update_status is true.
- */
 static void http_server_fw_update_reset_timer(void)
 {
 	if (g_fw_update_status == OTA_UPDATE_SUCCESSFUL)
@@ -74,6 +72,7 @@ static void http_server_fw_update_reset_timer(void)
 		ESP_LOGI(TAG, "http_server_fw_update_reset_timer: FW update unsuccessful");
 	}
 }
+*/
 
 /**
  * HTTP server monitor task used to track events of the HTTP server
@@ -106,14 +105,14 @@ static void http_server_monitor(void *parameter)
 
 				case HTTP_MSG_OTA_UPDATE_SUCCESSFUL:
 					ESP_LOGI(TAG, "HTTP_MSG_OTA_UPDATE_SUCCESSFUL");
-					g_fw_update_status = OTA_UPDATE_SUCCESSFUL;
-					http_server_fw_update_reset_timer();
+					//g_fw_update_status = OTA_UPDATE_SUCCESSFUL;
+					//http_server_fw_update_reset_timer();
 
 					break;
 
 				case HTTP_MSG_OTA_UPDATE_FAILED:
 					ESP_LOGI(TAG, "HTTP_MSG_OTA_UPDATE_FAILED");
-					g_fw_update_status = OTA_UPDATE_FAILED;
+					//g_fw_update_status = OTA_UPDATE_FAILED;
 
 					break;
 
@@ -200,10 +199,6 @@ static esp_err_t http_server_favicon_ico_handler(httpd_req_t *req)
 }
 
 /**
- * Receives the .bin file fia the web page and handles the firmware update
- * @param req HTTP request for which the uri needs to be handled.
- * @return ESP_OK, otherwise ESP_FAIL if timeout occurs and the update cannot be started.
- */
 esp_err_t http_server_OTA_update_handler(httpd_req_t *req)
 {
 	esp_ota_handle_t ota_handle;
@@ -294,12 +289,6 @@ esp_err_t http_server_OTA_update_handler(httpd_req_t *req)
 	return ESP_OK;
 }
 
-/**
- * OTA status handler responds with the firmware update status after the OTA update is started
- * and responds with the compile time/date when the page is first requested
- * @param req HTTP request for which the uri needs to be handled
- * @return ESP_OK
- */
 esp_err_t http_server_OTA_status_handler(httpd_req_t *req)
 {
 	char otaJSON[100];
@@ -313,6 +302,7 @@ esp_err_t http_server_OTA_status_handler(httpd_req_t *req)
 
 	return ESP_OK;
 }
+*/
 
 /**
  * DHT sensor readings JSON handler responds with DHT22 sensor data
@@ -353,16 +343,78 @@ static esp_err_t http_server_toogle_uart_handler(httpd_req_t *req)
 {
 	ESP_LOGI(TAG, "/toogle_uart.json requested");
 
-	//mandar mensaje a la cola que pare la tarea
+	int content_len = req->content_len;
+    if (content_len <= 0) {
+        ESP_LOGE(TAG, "Empty or invalid content length received.");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    char* buf = (char*)malloc(content_len + 1);
+    if (!buf) {
+        ESP_LOGE(TAG, "Failed to allocate memory for request content");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    int received = 0;
+    int ret;
+    while (received < content_len) {
+        ret = httpd_req_recv(req, buf + received, content_len - received);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            ESP_LOGE(TAG, "Failed to receive request content: %d", ret);
+            free(buf);
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        received += ret;
+    }
+    buf[received] = '\0';
+
+    printf("Received JSON data: %s\n", buf);
+
+	cJSON *root = cJSON_Parse(buf);
+    free(buf);
+
+    if (root == NULL) {
+        const char *error_ptr = cJSON_GetErrorPtr();
+        if (error_ptr != NULL) {
+            ESP_LOGE(TAG, "Error parsing JSON before: %s", error_ptr);
+        }
+        ESP_LOGE(TAG, "Failed to parse JSON data");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    cJSON *uart_status = cJSON_GetObjectItemCaseSensitive(root, "uart_on");
+
+    bool uart_on;
+    
+    if (cJSON_IsBool(uart_status)) {
+
+		if(cJSON_IsTrue(uart_status)) {
+			uart_on = true;
+			printf("UART ON parsed\n");
+		} else {
+			uart_on = false;
+			printf("UART OFF parsed\n");
+		}
+    } else {
+        ESP_LOGW(TAG, "Red value not found or not a bool, defaulting to false");
+    }
+
+    cJSON_Delete(root);
 
 	// Cerrar la conexion
     httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, NULL, 0);
-    
-    
 
 	return ESP_OK;
 }
+
 static esp_err_t http_server_rgb_values_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "/rgb_values.json requested (POST)");
@@ -398,7 +450,7 @@ static esp_err_t http_server_rgb_values_handler(httpd_req_t *req)
     }
     buf[received] = '\0';
 
-    ESP_LOGI(TAG, "Received JSON data: %s", buf);
+    printf("Received JSON data: %s\n", buf);
 
     cJSON *root = cJSON_Parse(buf);
     free(buf);
@@ -422,21 +474,21 @@ static esp_err_t http_server_rgb_values_handler(httpd_req_t *req)
     
     if (cJSON_IsNumber(red_item)) { // Check if it's a number
         red_val = (int)cJSON_GetNumberValue(red_item); // Get the number value
-        ESP_LOGI(TAG, "Parsed Red value: %d", red_val);
+        
     } else {
         ESP_LOGW(TAG, "Red value not found or not a number, defaulting to 0");
     }
 
     if (cJSON_IsNumber(green_item)) { // Check if it's a number
         green_val = (int)cJSON_GetNumberValue(green_item); // Get the number value
-        ESP_LOGI(TAG, "Parsed Green value: %d", green_val);
+        
     } else {
         ESP_LOGW(TAG, "Green value not found or not a number, defaulting to 0");
     }
 
     if (cJSON_IsNumber(blue_item)) { // Check if it's a number
         blue_val = (int)cJSON_GetNumberValue(blue_item); // Get the number value
-        ESP_LOGI(TAG, "Parsed Blue value: %d", blue_val);
+        
     } else {
         ESP_LOGW(TAG, "Blue value not found or not a number, defaulting to 0");
     }
@@ -545,7 +597,7 @@ static httpd_handle_t http_server_configure(void)
 				.user_ctx = NULL
 		};
 		httpd_register_uri_handler(http_server_handle, &favicon_ico);
-
+/**
 		// register OTAupdate handler
 		httpd_uri_t OTA_update = {
 				.uri = "/OTAupdate",
@@ -563,7 +615,7 @@ static httpd_handle_t http_server_configure(void)
 				.user_ctx = NULL
 		};
 		httpd_register_uri_handler(http_server_handle, &OTA_status);
-
+*/
 		// register dhtSensor.json handler
 		httpd_uri_t dht_sensor_json = {
 				.uri = "/dhtSensor.json",
@@ -585,12 +637,12 @@ static httpd_handle_t http_server_configure(void)
 		//turn off UART
 		
 		httpd_uri_t toogle_uart = {
-				.uri = "/uart_off.json",
+				.uri = "/toogle_uart.json",
 				.method = HTTP_POST,
-				.handler = http_server_toogle_led_handler,
+				.handler = http_server_toogle_uart_handler,
 				.user_ctx = NULL
 		};
-		httpd_register_uri_handler(http_server_handle, &toogle_led);
+		httpd_register_uri_handler(http_server_handle, &toogle_uart);
 
 		// register rgb_receiver handler
 		httpd_uri_t rgb_values = {
