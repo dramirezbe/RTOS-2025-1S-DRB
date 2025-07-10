@@ -12,7 +12,9 @@
 #include "http_server.h"
 #include "tasks_common.h"
 #include "wifi_app.h"
-#include "rgb_led.h"
+//#include "rgb_led.h"
+//#include "freertos/queue.h"
+
 
 #include <cJSON.h>
 
@@ -305,20 +307,20 @@ esp_err_t http_server_OTA_status_handler(httpd_req_t *req)
 */
 
 /**
- * DHT sensor readings JSON handler responds with DHT22 sensor data
+ * NTC sensor readings JSON handler responds with NTC sensor data
  * @param req HTTP request for which the uri needs to be handled
  * @return ESP_OK
  */
-static esp_err_t http_server_get_dht_sensor_readings_json_handler(httpd_req_t *req)
+static esp_err_t http_server_get_ntc_sensor_readings_json_handler(httpd_req_t *req)
 {
-	ESP_LOGI(TAG, "/dhtSensor.json requested");
+	ESP_LOGI(TAG, "/ntcSensor.json requested");
 
-	char dhtSensorJSON[100];
+	char ntcSensorJSON[100];
 
-	sprintf(dhtSensorJSON, "{\"temp\":\"%.1f\",\"humidity\":\"%.1f\"}", 30.1, 40.5);
+	sprintf(ntcSensorJSON, "{\"temp\":\"%.1f\",\"humidity\":\"%.1f\"}", 30.1, 40.5);
 
 	httpd_resp_set_type(req, "application/json");
-	httpd_resp_send(req, dhtSensorJSON, strlen(dhtSensorJSON));
+	httpd_resp_send(req, ntcSensorJSON, strlen(ntcSensorJSON));
 
 	return ESP_OK;
 }
@@ -339,9 +341,12 @@ static esp_err_t http_server_toogle_led_handler(httpd_req_t *req)
 	return ESP_OK;
 }
 
+bool uart_on;
 static esp_err_t http_server_toogle_uart_handler(httpd_req_t *req)
 {
 	ESP_LOGI(TAG, "/toogle_uart.json requested");
+
+	
 
 	int content_len = req->content_len;
     if (content_len <= 0) {
@@ -391,7 +396,7 @@ static esp_err_t http_server_toogle_uart_handler(httpd_req_t *req)
 
     cJSON *uart_status = cJSON_GetObjectItemCaseSensitive(root, "uart_on");
 
-    bool uart_on;
+    
     
     if (cJSON_IsBool(uart_status)) {
 
@@ -413,6 +418,120 @@ static esp_err_t http_server_toogle_uart_handler(httpd_req_t *req)
     httpd_resp_send(req, NULL, 0);
 
 	return ESP_OK;
+}
+
+
+
+static esp_err_t http_server_temp_threshold_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "/temp_threshold.json requested (POST)");
+
+    int content_len = req->content_len;
+    if (content_len <= 0) {
+        ESP_LOGE(TAG, "Empty or invalid content length received.");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    char* buf = (char*)malloc(content_len + 1);
+    if (!buf) {
+        ESP_LOGE(TAG, "Failed to allocate memory for request content");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    int received = 0;
+    int ret;
+    while (received < content_len) {
+        ret = httpd_req_recv(req, buf + received, content_len - received);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            ESP_LOGE(TAG, "Failed to receive request content: %d", ret);
+            free(buf);
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        received += ret;
+    }
+    buf[received] = '\0';
+
+    printf("Received JSON data: %s\n", buf);
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+
+    if (root == NULL) {
+        const char *error_ptr = cJSON_GetErrorPtr();
+        if (error_ptr != NULL) {
+            ESP_LOGE(TAG, "Error parsing JSON before: %s", error_ptr);
+        }
+        ESP_LOGE(TAG, "Failed to parse JSON data");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+	cJSON *red_min_item = cJSON_GetObjectItemCaseSensitive(root, "red_min");
+	cJSON *red_max_item = cJSON_GetObjectItemCaseSensitive(root, "red_max");
+	cJSON *green_min_item = cJSON_GetObjectItemCaseSensitive(root, "green_min");
+	cJSON *green_max_item = cJSON_GetObjectItemCaseSensitive(root, "green_max");
+	cJSON *blue_min_item = cJSON_GetObjectItemCaseSensitive(root, "blue_min");
+	cJSON *blue_max_item = cJSON_GetObjectItemCaseSensitive(root, "blue_max");
+
+    float red_min = 0, red_max = 0, green_min = 0, green_max = 0, blue_min = 0, blue_max = 0;
+
+    
+    if (cJSON_IsNumber(red_min_item)) { // Check if it's a number
+        red_min = (float)cJSON_GetNumberValue(red_min_item); // Get the number value
+        
+    } else {
+        ESP_LOGW(TAG, "Red min value not found or not a number, defaulting to 0");
+    }
+
+    if (cJSON_IsNumber(red_max_item)) { // Check if it's a number
+        red_max = (float)cJSON_GetNumberValue(red_max_item); // Get the number value
+        
+    } else {
+        ESP_LOGW(TAG, "Red max value not found or not a number, defaulting to 0");
+    }
+
+    if (cJSON_IsNumber(green_min_item)) { // Check if it's a number
+        green_min = (float)cJSON_GetNumberValue(green_min_item); // Get the number value
+        
+    } else {
+        ESP_LOGW(TAG, "Green min value not found or not a number, defaulting to 0");
+    }
+
+    if (cJSON_IsNumber(green_max_item)) { // Check if it's a number
+        green_max = (float)cJSON_GetNumberValue(green_max_item); // Get the number value
+        
+    } else {
+        ESP_LOGW(TAG, "Green max value not found or not a number, defaulting to 0");
+    }
+
+	if (cJSON_IsNumber(blue_min_item)) { // Check if it's a number
+        blue_min = (float)cJSON_GetNumberValue(blue_min_item); // Get the number value
+        
+    } else {
+        ESP_LOGW(TAG, "Blue value not found or not a number, defaulting to 0");
+    }
+
+	if (cJSON_IsNumber(blue_max_item)) { // Check if it's a number
+        blue_max = (float)cJSON_GetNumberValue(blue_max_item); // Get the number value
+        
+    } else {
+        ESP_LOGW(TAG, "Blue max value not found or not a number, defaulting to 0");
+    }
+
+    printf("Values parsed: RedMin=%f, RedMax=%f, GreenMin=%f, GreenMax=%f, BlueMin=%f, BlueMax=%f\n", red_min, red_max, green_min, green_max, blue_min, blue_max);
+
+    cJSON_Delete(root);
+
+    httpd_resp_set_hdr(req, "Connection", "close");
+    httpd_resp_send(req, NULL, 0);
+
+    return ESP_OK;
 }
 
 static esp_err_t http_server_rgb_values_handler(httpd_req_t *req)
@@ -501,6 +620,8 @@ static esp_err_t http_server_rgb_values_handler(httpd_req_t *req)
 
     httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, NULL, 0);
+
+	
 
     return ESP_OK;
 }
@@ -616,14 +737,14 @@ static httpd_handle_t http_server_configure(void)
 		};
 		httpd_register_uri_handler(http_server_handle, &OTA_status);
 */
-		// register dhtSensor.json handler
-		httpd_uri_t dht_sensor_json = {
-				.uri = "/dhtSensor.json",
+		// register ntcSensor.json handler
+		httpd_uri_t ntc_sensor_json = {
+				.uri = "/ntcSensor.json",
 				.method = HTTP_GET,
-				.handler = http_server_get_dht_sensor_readings_json_handler,
+				.handler = http_server_get_ntc_sensor_readings_json_handler,
 				.user_ctx = NULL
 		};
-		httpd_register_uri_handler(http_server_handle, &dht_sensor_json);
+		httpd_register_uri_handler(http_server_handle, &ntc_sensor_json);
 		
 		// register toogle_led handler
 		httpd_uri_t toogle_led = {
@@ -652,6 +773,15 @@ static httpd_handle_t http_server_configure(void)
 				.user_ctx = NULL
 		};
 		httpd_register_uri_handler(http_server_handle, &rgb_values);
+
+		// register temp_threshold handler
+		httpd_uri_t temp_threshold = {
+				.uri = "/temp_threshold.json",
+				.method = HTTP_POST,
+				.handler = http_server_temp_threshold_handler,
+				.user_ctx = NULL
+		};
+		httpd_register_uri_handler(http_server_handle, &temp_threshold);
 
 		return http_server_handle;
 	}

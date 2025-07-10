@@ -6,13 +6,14 @@
 #include "driver/gpio.h"
 
 #include "wifi_app.h"
-#include "rgb_led.h"
+//#include "rgb_led.h"
 #include "http_server.h"
 
 
-static void configure_led(void)
+
+
+static void configure_blink_led(void)
 {
-    
     gpio_reset_pin(BLINK_GPIO);
     /* Set the GPIO as a push/pull output */
     gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
@@ -30,7 +31,7 @@ void app_main(void)
 		ret = nvs_flash_init();
 	}
 	ESP_ERROR_CHECK(ret);
-	configure_led();
+	configure_blink_led();
 	// Start Wifi
 	wifi_app_start();
 }

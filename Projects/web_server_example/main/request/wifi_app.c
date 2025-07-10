@@ -13,9 +13,10 @@
 #include "lwip/netdb.h"
 
 #include "http_server.h"
-#include "rgb_led.h"
+//#include "rgb_led.h"
 #include "tasks_common.h"
 #include "wifi_app.h"
+#include "freertos/queue.h"
 
 // Tag usado para los mensajes de la consola serie de ESP
 static const char TAG[] = "wifi_app";
@@ -207,7 +208,7 @@ static void wifi_app_task(void *pvParameters)
                 case WIFI_APP_MSG_START_HTTP_SERVER:
                     ESP_LOGI(TAG, "WIFI_APP_MSG_START_HTTP_SERVER");
                     http_server_start();
-                    rgb_led_http_server_started(); // Descomentado para indicar el estado
+                    //rgb_led_http_server_started(); // Descomentado para indicar el estado
                     break;
 
                 case WIFI_APP_MSG_CONNECTING_FROM_HTTP_SERVER:
@@ -217,7 +218,7 @@ static void wifi_app_task(void *pvParameters)
 
                 case WIFI_APP_MSG_STA_CONNECTED_GOT_IP:
                     ESP_LOGI(TAG, "WIFI_APP_MSG_STA_CONNECTED_GOT_IP");
-                    rgb_led_wifi_connected(); // Descomentado para indicar conexión exitosa
+                    //rgb_led_wifi_connected(); // Descomentado para indicar conexión exitosa
                     break;
 
                 default:
@@ -239,7 +240,7 @@ void wifi_app_start(void)
     ESP_LOGI(TAG, "STARTING WIFI APPLICATION");
 
     // Indica con el LED que la aplicación WiFi ha comenzado
-    rgb_led_wifi_app_started(); // Descomentado
+    //rgb_led_wifi_app_started(); // Descomentado
 
     // Deshabilita los mensajes de log por defecto de WiFi para evitar ruido
     esp_log_level_set("wifi", ESP_LOG_NONE);

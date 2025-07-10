@@ -17,12 +17,20 @@ var uart_on = true;
  */
 $(document).ready(function() {
     // getUpdateStatus(); // Commented out: OTA functionality not currently used
-    startDHTSensorInterval(); // Start fetching NTC sensor values
+    startNTCsensorInterval(); // Start fetching NTC sensor values
     
     // Activate listeners for RGB input fields to restrict values
     activate_listener('red_val');
     activate_listener('green_val');
     activate_listener('blue_val');
+
+    // Activate listeners for temperature threshold input fields
+    activate_listener('red_min');
+    activate_listener('red_max');
+    activate_listener('green_min');
+    activate_listener('green_max');
+    activate_listener('blue_min');
+    activate_listener('blue_max');
     
     // Attach click event handlers for the RGB and LED control buttons
     $("#send_rgb").on("click", function() {
@@ -30,6 +38,11 @@ $(document).ready(function() {
     });
     $("#toogle_led").on("click", function() {
         toogle_led();
+    });
+
+    // Attach click event handler for the temperature threshold button
+    $("#send_temp_threshold").on("click", function() {
+        send_temp_threshold();
     });
 
     // Initialize UART button state and attach click handler
@@ -112,10 +125,10 @@ $(document).ready(function() {
 
 /**
  * Gets NTC sensor temperature value for display on the web page.
- * The endpoint is `/dhtSensor.json`, but we are assuming it now returns NTC data.
+ * The endpoint is `/ntcSensor.json`, but we are assuming it now returns NTC data.
  */
-function getDHTSensorValues() {
-    $.getJSON('/dhtSensor.json', function(data) {
+function getNTCsensorValues() {
+    $.getJSON('/ntcSensor.json', function(data) {
         // Assuming the JSON response contains a 'temp' field for the temperature reading
         $("#temperature_reading").text(data["temp"] + " °C"); // Added unit for clarity
     });
@@ -124,8 +137,8 @@ function getDHTSensorValues() {
 /**
  * Sets the interval for getting the updated NTC sensor values.
  */
-function startDHTSensorInterval() {
-    setInterval(getDHTSensorValues, 5000); // Fetch temperature every 5 seconds
+function startNTCsensorInterval() {
+    setInterval(getNTCsensorValues, 5000); // Fetch temperature every 5 seconds
 }
 
 /**
@@ -164,7 +177,7 @@ function startDHTSensorInterval() {
 /**
  * Sends the RGB values to the ESP32.
  * The values are read from the input fields and sent as a JSON object.
- */
+ */ 
 function send_rgb_values() {
     // Get values from the input fields
     var red_val = $("#red_val").val();
@@ -190,6 +203,44 @@ function send_rgb_values() {
         console.log("RGB values sent successfully!");
     }).fail(function(jqXHR, textStatus, errorThrown) {
         console.error("Error sending RGB values:", textStatus, errorThrown);
+    });
+}
+
+/**
+ * Sends the temperature threshold values to the ESP32.
+ * The values are read from the input fields and sent as a JSON object.
+ */
+function send_temp_threshold() {
+    // Get values from the input fields for each color's min/max thresholds
+    var red_min = $("#red_min").val();
+    var red_max = $("#red_max").val();
+    var green_min = $("#green_min").val();
+    var green_max = $("#green_max").val();
+    var blue_min = $("#blue_min").val();
+    var blue_max = $("#blue_max").val();
+
+    // Create a data object to be sent as JSON
+    var temp_threshold_data = {
+        'red_min': parseInt(red_min),
+        'red_max': parseInt(red_max),
+        'green_min': parseInt(green_min),
+        'green_max': parseInt(green_max),
+        'blue_min': parseInt(blue_min),
+        'blue_max': parseInt(blue_max),
+        'timestamp': Date.now() // Add a timestamp for tracking
+    };
+
+    // Send the temperature threshold data using AJAX POST request
+    $.ajax({
+        url: '/temp_threshold.json', // Define your endpoint for temperature thresholds
+        contentType: 'application/json', // Specify that you're sending JSON
+        method: 'POST',
+        cache: false,
+        data: JSON.stringify(temp_threshold_data) // Convert the data object to a JSON string
+    }).done(function() {
+        console.log("Temperature threshold values sent successfully!");
+    }).fail(function(jqXHR, textStatus, errorThrown) {
+        console.error("Error sending temperature threshold values:", textStatus, errorThrown);
     });
 }
 
