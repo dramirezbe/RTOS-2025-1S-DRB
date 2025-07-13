@@ -5,7 +5,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 
-#include <string.h> // Necesario para memset y strlen
+#include <string.h>
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -13,7 +13,6 @@
 #include "lwip/netdb.h"
 
 #include "http_server.h"
-//#include "rgb_led.h"
 #include "tasks_common.h"
 #include "wifi_app.h"
 #include "freertos/queue.h"
@@ -208,7 +207,7 @@ static void wifi_app_task(void *pvParameters)
                 case WIFI_APP_MSG_START_HTTP_SERVER:
                     ESP_LOGI(TAG, "WIFI_APP_MSG_START_HTTP_SERVER");
                     http_server_start();
-                    //rgb_led_http_server_started(); // Descomentado para indicar el estado
+                    
                     break;
 
                 case WIFI_APP_MSG_CONNECTING_FROM_HTTP_SERVER:
@@ -239,10 +238,6 @@ void wifi_app_start(void)
 {
     ESP_LOGI(TAG, "STARTING WIFI APPLICATION");
 
-    // Indica con el LED que la aplicación WiFi ha comenzado
-    //rgb_led_wifi_app_started(); // Descomentado
-
-    // Deshabilita los mensajes de log por defecto de WiFi para evitar ruido
     esp_log_level_set("wifi", ESP_LOG_NONE);
 
     // Crea la cola de mensajes

@@ -15,14 +15,10 @@
 //#include "rgb_led.h"
 //#include "freertos/queue.h"
 
-
 #include <cJSON.h>
 
 // Tag used for ESP serial console messages
 static const char TAG[] = "http_server";
-
-// Firmware update status
-//static int g_fw_update_status = OTA_UPDATE_PENDING;
 
 // HTTP server task handle
 static httpd_handle_t http_server_handle = NULL;
@@ -35,16 +31,6 @@ static QueueHandle_t http_server_monitor_queue_handle;
 
 static uint8_t s_led_state = 0;
 
-/**
-
-const esp_timer_create_args_t fw_update_reset_args = {
-		.callback = &http_server_fw_update_reset_callback,
-		.arg = NULL,
-		.dispatch_method = ESP_TIMER_TASK,
-		.name = "fw_update_reset"
-};
-esp_timer_handle_t fw_update_reset;
-*/
 
 // Embedded files: JQuery, index.html, app.css, app.js and favicon.ico files
 extern const uint8_t jquery_3_3_1_min_js_start[]	asm("_binary_jquery_3_3_1_min_js_start");
@@ -58,23 +44,81 @@ extern const uint8_t app_js_end[]					asm("_binary_app_js_end");
 extern const uint8_t favicon_ico_start[]			asm("_binary_favicon_ico_start");
 extern const uint8_t favicon_ico_end[]				asm("_binary_favicon_ico_end");
 
-/**
-static void http_server_fw_update_reset_timer(void)
-{
-	if (g_fw_update_status == OTA_UPDATE_SUCCESSFUL)
-	{
-		ESP_LOGI(TAG, "http_server_fw_update_reset_timer: FW updated successful starting FW update reset timer");
 
-		// Give the web page a chance to receive an acknowledge back and initialize the timer
-		ESP_ERROR_CHECK(esp_timer_create(&fw_update_reset_args, &fw_update_reset));
-		ESP_ERROR_CHECK(esp_timer_start_once(fw_update_reset, 8000000));
-	}
-	else
-	{
-		ESP_LOGI(TAG, "http_server_fw_update_reset_timer: FW update unsuccessful");
-	}
+//-----------------------------------UTILS----------------------------
+/**
+ * @brief Receives HTTP request content, handling content length, memory allocation, and reception.
+ *
+ * @param req Pointer to the httpd_req_t structure.
+ * @param buf_out Pointer to a char* where the allocated buffer containing the received content will be stored.
+ * The caller is responsible for freeing this buffer.
+ * @return ESP_OK on success, ESP_FAIL on error.
+ */
+esp_err_t receive_http_content(httpd_req_t *req, char **buf_out) {
+    int content_len = req->content_len;
+
+    // 1. Check for valid content length
+    if (content_len <= 0) {
+        ESP_LOGE(TAG, "Empty or invalid content length received.");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    // 2. Allocate memory for the request content
+    char* buf = (char*)malloc(content_len + 1);
+    if (!buf) {
+        ESP_LOGE(TAG, "Failed to allocate memory for request content");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    // 3. Receive the content
+    int received = 0;
+    int ret;
+    while (received < content_len) {
+        ret = httpd_req_recv(req, buf + received, content_len - received);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                // Continue if it's a timeout, try receiving again
+                continue;
+            }
+            ESP_LOGE(TAG, "Failed to receive request content: %d", ret);
+            free(buf); // Free allocated memory on error
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        received += ret;
+    }
+    buf[received] = '\0'; // Null-terminate the received data
+
+    printf("Received JSON data: %s\n", buf); // Print for debugging
+
+    *buf_out = buf; // Pass the allocated buffer back to the caller
+    return ESP_OK;
 }
-*/
+
+// Helper function to safely extract a float value from a cJSON object
+static float get_float_from_json(cJSON *json_obj, const char *key) {
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(json_obj, key);
+    if (cJSON_IsNumber(item)) {
+        return (float)cJSON_GetNumberValue(item);
+    } else {
+        ESP_LOGW(TAG, "%s value not found or not a number, defaulting to 0", key);
+        return 0.0f; // Default value if not found or not a number
+    }
+}
+
+static float get_int_from_json(cJSON *json_obj, const char *key) {
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(json_obj, key);
+    if (cJSON_IsNumber(item)) {
+        return (int)cJSON_GetNumberValue(item);
+    } else {
+        ESP_LOGW(TAG, "%s value not found or not a number, defaulting to 0", key);
+        return 0;
+    }
+}
+
+//---------------------------------HTTP------------------------------------
 
 /**
  * HTTP server monitor task used to track events of the HTTP server
@@ -201,112 +245,6 @@ static esp_err_t http_server_favicon_ico_handler(httpd_req_t *req)
 }
 
 /**
-esp_err_t http_server_OTA_update_handler(httpd_req_t *req)
-{
-	esp_ota_handle_t ota_handle;
-
-	char ota_buff[1024];
-	int content_length = req->content_len;
-	int content_received = 0;
-	int recv_len;
-	bool is_req_body_started = false;
-	bool flash_successful = false;
-
-	const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
-
-	do
-	{
-		// Read the data for the request
-		if ((recv_len = httpd_req_recv(req, ota_buff, MIN(content_length, sizeof(ota_buff)))) < 0)
-		{
-			// Check if timeout occurred
-			if (recv_len == HTTPD_SOCK_ERR_TIMEOUT)
-			{
-				ESP_LOGI(TAG, "http_server_OTA_update_handler: Socket Timeout");
-				continue; ///> Retry receiving if timeout occurred
-			}
-			ESP_LOGI(TAG, "http_server_OTA_update_handler: OTA other Error %d", recv_len);
-			return ESP_FAIL;
-		}
-		printf("http_server_OTA_update_handler: OTA RX: %d of %d\r", content_received, content_length);
-
-		// Is this the first data we are receiving
-		// If so, it will have the information in the header that we need.
-		if (!is_req_body_started)
-		{
-			is_req_body_started = true;
-
-			// Get the location of the .bin file content (remove the web form data)
-			char *body_start_p = strstr(ota_buff, "\r\n\r\n") + 4;
-			int body_part_len = recv_len - (body_start_p - ota_buff);
-
-			printf("http_server_OTA_update_handler: OTA file size: %d\r\n", content_length);
-
-			esp_err_t err = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &ota_handle);
-			if (err != ESP_OK)
-			{
-				printf("http_server_OTA_update_handler: Error with OTA begin, cancelling OTA\r\n");
-				return ESP_FAIL;
-			}
-			else
-			{
-				//printf("http_server_OTA_update_handler: Writing to partition subtype %d at offset 0x%lx\r\n", update_partition->subtype, update_partition->address);
-			}
-
-			// Write this first part of the data
-			esp_ota_write(ota_handle, body_start_p, body_part_len);
-			content_received += body_part_len;
-		}
-		else
-		{
-			// Write OTA data
-			esp_ota_write(ota_handle, ota_buff, recv_len);
-			content_received += recv_len;
-		}
-
-	} while (recv_len > 0 && content_received < content_length);
-
-	if (esp_ota_end(ota_handle) == ESP_OK)
-	{
-		// Lets update the partition
-		if (esp_ota_set_boot_partition(update_partition) == ESP_OK)
-		{
-			const esp_partition_t *boot_partition = esp_ota_get_boot_partition();
-			//ESP_LOGI(TAG, "http_server_OTA_update_handler: Next boot partition subtype %d at offset 0x%lx", boot_partition->subtype, boot_partition->address);
-			flash_successful = true;
-		}
-		else
-		{
-			ESP_LOGI(TAG, "http_server_OTA_update_handler: FLASHED ERROR!!!");
-		}
-	}
-	else
-	{
-		ESP_LOGI(TAG, "http_server_OTA_update_handler: esp_ota_end ERROR!!!");
-	}
-
-	// We won't update the global variables throughout the file, so send the message about the status
-	if (flash_successful) { http_server_monitor_send_message(HTTP_MSG_OTA_UPDATE_SUCCESSFUL); } else { http_server_monitor_send_message(HTTP_MSG_OTA_UPDATE_FAILED); }
-
-	return ESP_OK;
-}
-
-esp_err_t http_server_OTA_status_handler(httpd_req_t *req)
-{
-	char otaJSON[100];
-
-	ESP_LOGI(TAG, "OTAstatus requested");
-
-	sprintf(otaJSON, "{\"ota_update_status\":%d,\"compile_time\":\"%s\",\"compile_date\":\"%s\"}", g_fw_update_status, __TIME__, __DATE__);
-
-	httpd_resp_set_type(req, "application/json");
-	httpd_resp_send(req, otaJSON, strlen(otaJSON));
-
-	return ESP_OK;
-}
-*/
-
-/**
  * NTC sensor readings JSON handler responds with NTC sensor data
  * @param req HTTP request for which the uri needs to be handled
  * @return ESP_OK
@@ -315,14 +253,31 @@ static esp_err_t http_server_get_ntc_sensor_readings_json_handler(httpd_req_t *r
 {
 	ESP_LOGI(TAG, "/ntcSensor.json requested");
 
-	char ntcSensorJSON[100];
+	cJSON *root;
+    char *json_string = NULL;
+    double temperature = 30.1;
+    double humidity = 40.5;
 
-	sprintf(ntcSensorJSON, "{\"temp\":\"%.1f\",\"humidity\":\"%.1f\"}", 30.1, 40.5);
+    root = cJSON_CreateObject();
 
-	httpd_resp_set_type(req, "application/json");
-	httpd_resp_send(req, ntcSensorJSON, strlen(ntcSensorJSON));
+    if (cJSON_AddNumberToObject(root, "temp", temperature) == NULL) {
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+    if (cJSON_AddNumberToObject(root, "humidity", humidity) == NULL) {
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
 
-	return ESP_OK;
+    json_string = cJSON_Print(root);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_string, strlen(json_string));
+
+    cJSON_Delete(root);
+    cJSON_free(json_string);
+
+    return ESP_OK;
 }
 
 static esp_err_t http_server_toogle_led_handler(httpd_req_t *req)
@@ -336,52 +291,22 @@ static esp_err_t http_server_toogle_led_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, NULL, 0);
     
-    
-
 	return ESP_OK;
 }
+
 
 bool uart_on;
 static esp_err_t http_server_toogle_uart_handler(httpd_req_t *req)
 {
-	ESP_LOGI(TAG, "/toogle_uart.json requested");
+    ESP_LOGI(TAG, "/toogle_uart.json requested");
 
-	
-
-	int content_len = req->content_len;
-    if (content_len <= 0) {
-        ESP_LOGE(TAG, "Empty or invalid content length received.");
-        httpd_resp_send_500(req);
+    char *buf = NULL; 
+   
+    if (receive_http_content(req, &buf) != ESP_OK) {
         return ESP_FAIL;
     }
 
-    char* buf = (char*)malloc(content_len + 1);
-    if (!buf) {
-        ESP_LOGE(TAG, "Failed to allocate memory for request content");
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-
-    int received = 0;
-    int ret;
-    while (received < content_len) {
-        ret = httpd_req_recv(req, buf + received, content_len - received);
-        if (ret <= 0) {
-            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-                continue;
-            }
-            ESP_LOGE(TAG, "Failed to receive request content: %d", ret);
-            free(buf);
-            httpd_resp_send_500(req);
-            return ESP_FAIL;
-        }
-        received += ret;
-    }
-    buf[received] = '\0';
-
-    printf("Received JSON data: %s\n", buf);
-
-	cJSON *root = cJSON_Parse(buf);
+    cJSON *root = cJSON_Parse(buf);
     free(buf);
 
     if (root == NULL) {
@@ -396,135 +321,45 @@ static esp_err_t http_server_toogle_uart_handler(httpd_req_t *req)
 
     cJSON *uart_status = cJSON_GetObjectItemCaseSensitive(root, "uart_on");
 
-    
-    
     if (cJSON_IsBool(uart_status)) {
-
-		if(cJSON_IsTrue(uart_status)) {
-			uart_on = true;
-			printf("UART ON parsed\n");
-		} else {
-			uart_on = false;
-			printf("UART OFF parsed\n");
-		}
-    } else {
-        ESP_LOGW(TAG, "Red value not found or not a bool, defaulting to false");
+        if(cJSON_IsTrue(uart_status)) {
+            uart_on = true;
+            printf("UART ON parsed\n");
+        } else {
+            uart_on = false;
+            printf("UART OFF parsed\n");
+        }
     }
 
     cJSON_Delete(root);
 
-	// Cerrar la conexion
     httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, NULL, 0);
 
-	return ESP_OK;
+    return ESP_OK;
 }
 
-
-
-static esp_err_t http_server_temp_threshold_handler(httpd_req_t *req)
-{
+static esp_err_t http_server_temp_threshold_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "/temp_threshold.json requested (POST)");
 
-    int content_len = req->content_len;
-    if (content_len <= 0) {
-        ESP_LOGE(TAG, "Empty or invalid content length received.");
-        httpd_resp_send_500(req);
+    char *buf = NULL; 
+   
+    if (receive_http_content(req, &buf) != ESP_OK) {
         return ESP_FAIL;
     }
-
-    char* buf = (char*)malloc(content_len + 1);
-    if (!buf) {
-        ESP_LOGE(TAG, "Failed to allocate memory for request content");
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-
-    int received = 0;
-    int ret;
-    while (received < content_len) {
-        ret = httpd_req_recv(req, buf + received, content_len - received);
-        if (ret <= 0) {
-            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-                continue;
-            }
-            ESP_LOGE(TAG, "Failed to receive request content: %d", ret);
-            free(buf);
-            httpd_resp_send_500(req);
-            return ESP_FAIL;
-        }
-        received += ret;
-    }
-    buf[received] = '\0';
-
-    printf("Received JSON data: %s\n", buf);
 
     cJSON *root = cJSON_Parse(buf);
     free(buf);
 
-    if (root == NULL) {
-        const char *error_ptr = cJSON_GetErrorPtr();
-        if (error_ptr != NULL) {
-            ESP_LOGE(TAG, "Error parsing JSON before: %s", error_ptr);
-        }
-        ESP_LOGE(TAG, "Failed to parse JSON data");
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
+    float red_min = get_float_from_json(root, "red_min");
+    float red_max = get_float_from_json(root, "red_max");
+    float green_min = get_float_from_json(root, "green_min");
+    float green_max = get_float_from_json(root, "green_max");
+    float blue_min = get_float_from_json(root, "blue_min");
+    float blue_max = get_float_from_json(root, "blue_max");
 
-	cJSON *red_min_item = cJSON_GetObjectItemCaseSensitive(root, "red_min");
-	cJSON *red_max_item = cJSON_GetObjectItemCaseSensitive(root, "red_max");
-	cJSON *green_min_item = cJSON_GetObjectItemCaseSensitive(root, "green_min");
-	cJSON *green_max_item = cJSON_GetObjectItemCaseSensitive(root, "green_max");
-	cJSON *blue_min_item = cJSON_GetObjectItemCaseSensitive(root, "blue_min");
-	cJSON *blue_max_item = cJSON_GetObjectItemCaseSensitive(root, "blue_max");
-
-    float red_min = 0, red_max = 0, green_min = 0, green_max = 0, blue_min = 0, blue_max = 0;
-
-    
-    if (cJSON_IsNumber(red_min_item)) { // Check if it's a number
-        red_min = (float)cJSON_GetNumberValue(red_min_item); // Get the number value
-        
-    } else {
-        ESP_LOGW(TAG, "Red min value not found or not a number, defaulting to 0");
-    }
-
-    if (cJSON_IsNumber(red_max_item)) { // Check if it's a number
-        red_max = (float)cJSON_GetNumberValue(red_max_item); // Get the number value
-        
-    } else {
-        ESP_LOGW(TAG, "Red max value not found or not a number, defaulting to 0");
-    }
-
-    if (cJSON_IsNumber(green_min_item)) { // Check if it's a number
-        green_min = (float)cJSON_GetNumberValue(green_min_item); // Get the number value
-        
-    } else {
-        ESP_LOGW(TAG, "Green min value not found or not a number, defaulting to 0");
-    }
-
-    if (cJSON_IsNumber(green_max_item)) { // Check if it's a number
-        green_max = (float)cJSON_GetNumberValue(green_max_item); // Get the number value
-        
-    } else {
-        ESP_LOGW(TAG, "Green max value not found or not a number, defaulting to 0");
-    }
-
-	if (cJSON_IsNumber(blue_min_item)) { // Check if it's a number
-        blue_min = (float)cJSON_GetNumberValue(blue_min_item); // Get the number value
-        
-    } else {
-        ESP_LOGW(TAG, "Blue value not found or not a number, defaulting to 0");
-    }
-
-	if (cJSON_IsNumber(blue_max_item)) { // Check if it's a number
-        blue_max = (float)cJSON_GetNumberValue(blue_max_item); // Get the number value
-        
-    } else {
-        ESP_LOGW(TAG, "Blue max value not found or not a number, defaulting to 0");
-    }
-
-    printf("Values parsed: RedMin=%f, RedMax=%f, GreenMin=%f, GreenMax=%f, BlueMin=%f, BlueMax=%f\n", red_min, red_max, green_min, green_max, blue_min, blue_max);
+    printf("Values parsed: RedMin=%.2f, RedMax=%.2f, GreenMin=%.2f, GreenMax=%.2f, BlueMin=%.2f, BlueMax=%.2f",
+             red_min, red_max, green_min, green_max, blue_min, blue_max);
 
     cJSON_Delete(root);
 
@@ -538,91 +373,25 @@ static esp_err_t http_server_rgb_values_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "/rgb_values.json requested (POST)");
 
-    int content_len = req->content_len;
-    if (content_len <= 0) {
-        ESP_LOGE(TAG, "Empty or invalid content length received.");
-        httpd_resp_send_500(req);
+	char *buf = NULL; 
+   
+    if (receive_http_content(req, &buf) != ESP_OK) {
         return ESP_FAIL;
     }
-
-    char* buf = (char*)malloc(content_len + 1);
-    if (!buf) {
-        ESP_LOGE(TAG, "Failed to allocate memory for request content");
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-
-    int received = 0;
-    int ret;
-    while (received < content_len) {
-        ret = httpd_req_recv(req, buf + received, content_len - received);
-        if (ret <= 0) {
-            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-                continue;
-            }
-            ESP_LOGE(TAG, "Failed to receive request content: %d", ret);
-            free(buf);
-            httpd_resp_send_500(req);
-            return ESP_FAIL;
-        }
-        received += ret;
-    }
-    buf[received] = '\0';
-
-    printf("Received JSON data: %s\n", buf);
 
     cJSON *root = cJSON_Parse(buf);
     free(buf);
 
-    if (root == NULL) {
-        const char *error_ptr = cJSON_GetErrorPtr();
-        if (error_ptr != NULL) {
-            ESP_LOGE(TAG, "Error parsing JSON before: %s", error_ptr);
-        }
-        ESP_LOGE(TAG, "Failed to parse JSON data");
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-
-    cJSON *red_item = cJSON_GetObjectItemCaseSensitive(root, "red_val");
-    cJSON *green_item = cJSON_GetObjectItemCaseSensitive(root, "green_val");
-    cJSON *blue_item = cJSON_GetObjectItemCaseSensitive(root, "blue_val");
-
-    int red_val = 0, green_val = 0, blue_val = 0;
-
-    
-    if (cJSON_IsNumber(red_item)) { // Check if it's a number
-        red_val = (int)cJSON_GetNumberValue(red_item); // Get the number value
-        
-    } else {
-        ESP_LOGW(TAG, "Red value not found or not a number, defaulting to 0");
-    }
-
-    if (cJSON_IsNumber(green_item)) { // Check if it's a number
-        green_val = (int)cJSON_GetNumberValue(green_item); // Get the number value
-        
-    } else {
-        ESP_LOGW(TAG, "Green value not found or not a number, defaulting to 0");
-    }
-
-    if (cJSON_IsNumber(blue_item)) { // Check if it's a number
-        blue_val = (int)cJSON_GetNumberValue(blue_item); // Get the number value
-        
-    } else {
-        ESP_LOGW(TAG, "Blue value not found or not a number, defaulting to 0");
-    }
+    int red_val = get_int_from_json(root, "red_val");
+    int green_val = get_int_from_json(root, "green_val");
+    int blue_val = get_int_from_json(root, "blue_val");
 
     printf("Values parsed: Red=%d, Green=%d, Blue=%d\n", red_val, green_val, blue_val);
-
-    //rgb_led_set_color(red_val, green_val, blue_val);
 
     cJSON_Delete(root);
 
     httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, NULL, 0);
-
-	
-
     return ESP_OK;
 }
 
@@ -642,7 +411,6 @@ static httpd_handle_t http_server_configure(void)
 	// Create HTTP server monitor task
 	xTaskCreatePinnedToCore(&http_server_monitor, "http_server_monitor", HTTP_SERVER_MONITOR_STACK_SIZE, NULL, HTTP_SERVER_MONITOR_PRIORITY, &task_http_server_monitor, HTTP_SERVER_MONITOR_CORE_ID);
 
-	
 
 	// The core that the HTTP server will run on
 	config.core_id = HTTP_SERVER_TASK_CORE_ID;
@@ -689,8 +457,6 @@ static httpd_handle_t http_server_configure(void)
 		};
 		httpd_register_uri_handler(http_server_handle, &jquery_js);
 
-		
-		
 
 		// register app.css handler
 		httpd_uri_t app_css = {
@@ -718,25 +484,7 @@ static httpd_handle_t http_server_configure(void)
 				.user_ctx = NULL
 		};
 		httpd_register_uri_handler(http_server_handle, &favicon_ico);
-/**
-		// register OTAupdate handler
-		httpd_uri_t OTA_update = {
-				.uri = "/OTAupdate",
-				.method = HTTP_POST,
-				.handler = http_server_OTA_update_handler,
-				.user_ctx = NULL
-		};
-		httpd_register_uri_handler(http_server_handle, &OTA_update);
 
-		// register OTAstatus handler
-		httpd_uri_t OTA_status = {
-				.uri = "/OTAstatus",
-				.method = HTTP_POST,
-				.handler = http_server_OTA_status_handler,
-				.user_ctx = NULL
-		};
-		httpd_register_uri_handler(http_server_handle, &OTA_status);
-*/
 		// register ntcSensor.json handler
 		httpd_uri_t ntc_sensor_json = {
 				.uri = "/ntcSensor.json",

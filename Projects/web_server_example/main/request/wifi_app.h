@@ -25,15 +25,15 @@ typedef void (*wifi_connected_event_callback_t)(void);
 #define WIFI_STA_POWER_SAVE			WIFI_PS_NONE		// Power save not used
 #define MAX_SSID_LENGTH				32					// IEEE standard maximum
 #define MAX_PASSWORD_LENGTH			64					// IEEE standard maximum
-#define MAX_CONNECTION_RETRIES		5					// Retry number on disconnect
+#define MAX_CONNECTION_RETRIES		10					// Retry number on disconnect
 
-#define WIFI_STA_SSID              "Javastral"
-#define WIFI_STA_PASSWORD          "damedane"
+#define WIFI_STA_SSID              "FAMILIA_SERNA"
+#define WIFI_STA_PASSWORD          "Jose123Jesus"
 #define WIFI_STA_POWER_SAVE        WIFI_PS_NONE         // no power‑save in STA
 
 #define MAX_SSID_LENGTH            32                  // IEEE max
 #define MAX_PASSWORD_LENGTH        64                  // IEEE max
-#define MAX_CONNECTION_RETRIES     5                   // STA retry count
+#define MAX_CONNECTION_RETRIES     10                   // STA retry count
 
 
 

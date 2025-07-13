@@ -1,10 +1,12 @@
 /**
- * Application entry point.
+ * @file main.c
+ * @author David Ramírez Betancourth
+ * @details Controlar 1 led rgb, leer temp termistor cada 3seg, Botón que active desactive la impresión por consola de la temp (uart),
+ * fijar los límites de la página, tanto por página como por uart (intentar hacer).
  */
 
 #include "nvs_flash.h"
 #include "driver/gpio.h"
-
 #include "wifi_app.h"
 //#include "rgb_led.h"
 #include "http_server.h"
@@ -31,6 +33,7 @@ void app_main(void)
 		ret = nvs_flash_init();
 	}
 	ESP_ERROR_CHECK(ret);
+	
 	configure_blink_led();
 	// Start Wifi
 	wifi_app_start();
