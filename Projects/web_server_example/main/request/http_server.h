@@ -25,6 +25,13 @@ typedef enum http_server_message
 	HTTP_MSG_OTA_UPDATE_FAILED,
 } http_server_message_e;
 
+typedef struct {
+	int red_val;
+	int green_val;
+	int blue_val;
+} rgb_values_t;
+
+
 /**
  * Structure for the message queue
  */
@@ -55,7 +62,5 @@ void http_server_stop(void);
  * Timer callback function which calls esp_restart upon successful firmware update.
  */
 void http_server_fw_update_reset_callback(void *arg);
-
-
 
 #endif /* MAIN_HTTP_SERVER_H_ */

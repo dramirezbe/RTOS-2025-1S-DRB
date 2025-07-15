@@ -32,6 +32,8 @@ static QueueHandle_t http_server_monitor_queue_handle;
 static uint8_t s_led_state = 0;
 
 
+
+
 // Embedded files: JQuery, index.html, app.css, app.js and favicon.ico files
 extern const uint8_t jquery_3_3_1_min_js_start[]	asm("_binary_jquery_3_3_1_min_js_start");
 extern const uint8_t jquery_3_3_1_min_js_end[]		asm("_binary_jquery_3_3_1_min_js_end");
@@ -295,7 +297,7 @@ static esp_err_t http_server_toogle_led_handler(httpd_req_t *req)
 }
 
 
-bool uart_on;
+extern bool uart_on;
 static esp_err_t http_server_toogle_uart_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "/toogle_uart.json requested");
@@ -339,6 +341,7 @@ static esp_err_t http_server_toogle_uart_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+extern float temp_levels[3][2];
 static esp_err_t http_server_temp_threshold_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "/temp_threshold.json requested (POST)");
 
@@ -361,6 +364,14 @@ static esp_err_t http_server_temp_threshold_handler(httpd_req_t *req) {
     printf("Values parsed: RedMin=%.2f, RedMax=%.2f, GreenMin=%.2f, GreenMax=%.2f, BlueMin=%.2f, BlueMax=%.2f",
              red_min, red_max, green_min, green_max, blue_min, blue_max);
 
+	temp_levels[0][0] = red_min;
+	temp_levels[0][1] = red_max;
+	temp_levels[1][0] = green_min;
+	temp_levels[1][1] = green_max;
+	temp_levels[2][0] = blue_min;
+	temp_levels[2][1] = blue_max;
+
+
     cJSON_Delete(root);
 
     httpd_resp_set_hdr(req, "Connection", "close");
@@ -369,6 +380,7 @@ static esp_err_t http_server_temp_threshold_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+extern QueueHandle_t rgb_event_queue;
 static esp_err_t http_server_rgb_values_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "/rgb_values.json requested (POST)");
@@ -388,10 +400,15 @@ static esp_err_t http_server_rgb_values_handler(httpd_req_t *req)
 
     printf("Values parsed: Red=%d, Green=%d, Blue=%d\n", red_val, green_val, blue_val);
 
+	rgb_values_t rgb_values = {.red_val = red_val, .green_val = green_val, .blue_val = blue_val};
+
     cJSON_Delete(root);
 
     httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, NULL, 0);
+
+	xQueueSend(rgb_event_queue, &rgb_values, portMAX_DELAY);
+
     return ESP_OK;
 }
 
