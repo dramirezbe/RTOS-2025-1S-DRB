@@ -200,7 +200,7 @@ static void wifi_app_task(void *pvParameters)
 
     for (;;)
     {
-        if (xQueueReceive(wifi_app_queue_handle, &msg, portMAX_DELAY))
+        if (xQueueReceive(wifi_app_queue_handle, &msg, (TickType_t)pdMS_TO_TICKS(10)))
         {
             switch (msg.msgID)
             {
@@ -231,7 +231,7 @@ BaseType_t wifi_app_send_message(wifi_app_message_e msgID)
 {
     wifi_app_queue_message_t msg;
     msg.msgID = msgID;
-    return xQueueSend(wifi_app_queue_handle, &msg, portMAX_DELAY);
+    return xQueueSend(wifi_app_queue_handle, &msg, (TickType_t)pdMS_TO_TICKS(10));
 }
 
 void wifi_app_start(void)

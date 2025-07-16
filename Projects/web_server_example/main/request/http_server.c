@@ -132,7 +132,7 @@ static void http_server_monitor(void *parameter)
 
 	for (;;)
 	{
-		if (xQueueReceive(http_server_monitor_queue_handle, &msg, portMAX_DELAY))
+		if (xQueueReceive(http_server_monitor_queue_handle, &msg, (TickType_t)pdMS_TO_TICKS(10)))
 		{
 			switch (msg.msgID)
 			{
@@ -251,13 +251,14 @@ static esp_err_t http_server_favicon_ico_handler(httpd_req_t *req)
  * @param req HTTP request for which the uri needs to be handled
  * @return ESP_OK
  */
+
+extern double temperature;
 static esp_err_t http_server_get_ntc_sensor_readings_json_handler(httpd_req_t *req)
 {
 	ESP_LOGI(TAG, "/ntcSensor.json requested");
 
 	cJSON *root;
     char *json_string = NULL;
-    double temperature = 30.1;
     double humidity = 40.5;
 
     root = cJSON_CreateObject();
@@ -340,11 +341,10 @@ static esp_err_t http_server_toogle_uart_handler(httpd_req_t *req)
 
     return ESP_OK;
 }
-
 extern float temp_levels[3][2];
 static esp_err_t http_server_temp_threshold_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "/temp_threshold.json requested (POST)");
-
+	
     char *buf = NULL; 
    
     if (receive_http_content(req, &buf) != ESP_OK) {
@@ -364,13 +364,14 @@ static esp_err_t http_server_temp_threshold_handler(httpd_req_t *req) {
     printf("Values parsed: RedMin=%.2f, RedMax=%.2f, GreenMin=%.2f, GreenMax=%.2f, BlueMin=%.2f, BlueMax=%.2f",
              red_min, red_max, green_min, green_max, blue_min, blue_max);
 
+	
+
 	temp_levels[0][0] = red_min;
 	temp_levels[0][1] = red_max;
 	temp_levels[1][0] = green_min;
 	temp_levels[1][1] = green_max;
 	temp_levels[2][0] = blue_min;
 	temp_levels[2][1] = blue_max;
-
 
     cJSON_Delete(root);
 
@@ -407,7 +408,7 @@ static esp_err_t http_server_rgb_values_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, NULL, 0);
 
-	xQueueSend(rgb_event_queue, &rgb_values, portMAX_DELAY);
+	xQueueSend(rgb_event_queue, &rgb_values, (TickType_t)pdMS_TO_TICKS(10));
 
     return ESP_OK;
 }
@@ -582,7 +583,7 @@ BaseType_t http_server_monitor_send_message(http_server_message_e msgID)
 {
 	http_server_queue_message_t msg;
 	msg.msgID = msgID;
-	return xQueueSend(http_server_monitor_queue_handle, &msg, portMAX_DELAY);
+	return xQueueSend(http_server_monitor_queue_handle, &msg, (TickType_t)pdMS_TO_TICKS(10));
 }
 
 void http_server_fw_update_reset_callback(void *arg)

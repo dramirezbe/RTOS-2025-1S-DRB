@@ -304,8 +304,8 @@ function activate_listener(used_id) {
         }
 
         // Restrict the value to be between 0 and 255
-        if (value > 255) {
-            value = 255;
+        if (value > 100) {
+            value = 100;
         } else if (value < 0) { // Added a lower bound check
             value = 0;
         }

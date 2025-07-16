@@ -17,21 +17,38 @@
 #include "wifi_app.h"
 #include "http_server.h"
 
+#include <math.h>
+
 //-------------------ADC-----------------------
 #define NTC_ADC_CH ADC_CHANNEL_5 //IO 33
+#define POT_ADC_CH ADC_CHANNEL_3 //IO 39
 #define ADC_UNIT   ADC_UNIT_1
 #define ADC_ATTEN  ADC_ATTEN_DB_12
 
-//-------------------RGB-----------------------
-#define R_CHANNEL     LEDC_CHANNEL_0
-#define G_CHANNEL     LEDC_CHANNEL_1
-#define B_CHANNEL     LEDC_CHANNEL_2
-#define R_IO          GPIO_NUM_27
-#define G_IO          GPIO_NUM_26
-#define B_IO          GPIO_NUM_25
+#define NTC_DATA_TYPE true
+#define POT_DATA_TYPE false
+
+//-------------------RGB DUTY-----------------------
+#define RD_CHANNEL     LEDC_CHANNEL_0
+#define GD_CHANNEL     LEDC_CHANNEL_1
+#define BD_CHANNEL     LEDC_CHANNEL_2
+#define RD_IO          GPIO_NUM_27
+#define GD_IO          GPIO_NUM_26
+#define BD_IO          GPIO_NUM_25
 #define LED_FREQUENCY 1000
 
-#define IS_RGB_COMMON_ANODE true
+//-------------------RGB TEMP-----------------------
+#define RT_CHANNEL     LEDC_CHANNEL_3
+#define GT_CHANNEL     LEDC_CHANNEL_4
+#define BT_CHANNEL     LEDC_CHANNEL_5
+#define RT_IO          GPIO_NUM_5
+#define GT_IO          GPIO_NUM_18
+#define BT_IO          GPIO_NUM_19
+#define LED_FREQUENCY 1000
+
+#define IS_RGB_COMMON_ANODE false //both
+
+
 
 //-------------------UART----------------------
 #define UART_NUM UART_NUM_0
@@ -47,17 +64,30 @@ typedef struct {
     float temp_sup;
 } patron_temp_t;
 
+// Enum for LED color states
+typedef enum {
+    LED_STATE_BLUE,
+    LED_STATE_GREEN,
+    LED_STATE_RED,
+    LED_STATE_NONE // For initial or off state, or if no conditions are met
+} led_color_state_t;
+
+typedef struct {
+    float value;
+    bool type;   // false pot, true ntc
+} adc_type_data_t;
+
 //---------------------------------------Global Vars ------------------------------------
 QueueHandle_t rgb_event_queue;
-static QueueHandle_t uart_queue;
-static QueueHandle_t temp_changes_queue;
+QueueHandle_t uart_status_queue;
+QueueHandle_t temp_uart_queue;
+QueueHandle_t temp_http_queue;
 
+static QueueHandle_t adc_data_queue;
+static QueueHandle_t uart_rx_queue;
 
-float temp_levels[3][2] = {
-    {40.0f, 80.0f}, // R: min, max
-    {20.0f, 40.0f}, // G: min, max
-    {0.0f, 20.0f}   // B: min, max
-};
+// Mutex for shared ADC resource
+SemaphoreHandle_t xMutex;
 
 bool uart_on = true;
 
@@ -68,10 +98,16 @@ static uint8_t uart_rx_buffer[RD_BUF_SIZE];
 // LEDC Timer and Channels configuration
 pwm_timer_config_t timer = {.frequency_hz = LED_FREQUENCY, .resolution_bit = LEDC_TIMER_10_BIT, .timer_num = LEDC_TIMER_0};
 
-rgb_pwm_t led_rgb = {
-    .red   = { .channel = R_CHANNEL, .gpio_num = R_IO, .duty_percent = 0 },
-    .green = { .channel = G_CHANNEL, .gpio_num = G_IO, .duty_percent = 0 },
-    .blue  = { .channel = B_CHANNEL, .gpio_num = B_IO, .duty_percent = 0 }
+rgb_pwm_t led_rgb_duty = {
+    .red   = { .channel = RD_CHANNEL, .gpio_num = RD_IO, .duty_percent = 0 },
+    .green = { .channel = GD_CHANNEL, .gpio_num = GD_IO, .duty_percent = 0 },
+    .blue  = { .channel = BD_CHANNEL, .gpio_num = BD_IO, .duty_percent = 0 }
+};
+
+rgb_pwm_t led_rgb_temp = {
+    .red   = { .channel = RT_CHANNEL, .gpio_num = RT_IO, .duty_percent = 0 },
+    .green = { .channel = GT_CHANNEL, .gpio_num = GT_IO, .duty_percent = 0 },
+    .blue  = { .channel = BT_CHANNEL, .gpio_num = BT_IO, .duty_percent = 0 }
 };
 
 // ADC Configurations and Handles
@@ -82,6 +118,14 @@ adc_config_t ntc_adc_conf = {
     .bitwidth = ADC_BITWIDTH_12,
 };
 adc_channel_handle_t ntc_adc_handle = NULL;
+
+adc_config_t pot_adc_conf = {
+    .unit_id = ADC_UNIT,
+    .channel = POT_ADC_CH,
+    .atten = ADC_ATTEN,
+    .bitwidth = ADC_BITWIDTH_12,
+};
+adc_channel_handle_t pot_adc_handle = NULL;
 
 //-----------------------------------Helper Functions------------------------------------------
 
@@ -99,6 +143,7 @@ patron_temp_t patron_level_temp(char *data) {
 }
 
 // Change global array
+float temp_levels[3][2];
 void fill_temp_levels(patron_temp_t patron) {
     switch(patron.color){
         case 'R':
@@ -154,20 +199,168 @@ static void configure_blink_led(void)
     gpio_reset_pin(BLINK_GPIO);
     /* Set the GPIO as a push/pull output */
     gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
-	//rgb_led_pwm_init();
+	
 }
 
+double temperature;
+void ntc_task(void *arg) {
+    
+    adc_type_data_t ntc_item;
+    ntc_item.type = NTC_DATA_TYPE;
+    ntc_item.value = 0;
+
+    const float beta = 3950.0;
+    const float R0 = 10000.0;
+    const float T0 = 298.15; // 25°C in Kelvin
+    const float R2 = 1000.0; // Resistor in voltage divider
+
+    const float Vi = 4.8; // Input voltage to the voltage divider
+    float Vo = 0;
+    float Rt = 0;
+    float T = 0; // Temperature in Kelvin
+    float final_T = 0; // Temperature in Celsius
+
+    // 1. Configure ADC
+    set_adc(&ntc_adc_conf, &ntc_adc_handle);
+
+    int raw_val = 0;
+    int voltage_mv = 0;
+
+    while (1) {
+        
+        xSemaphoreTake(xMutex, portMAX_DELAY); // Acquire mutex for ADC
+        get_raw_data(ntc_adc_handle, &raw_val);
+        raw_to_voltage(ntc_adc_handle, raw_val, &voltage_mv);
+
+        Vo = (float)voltage_mv / 1000.0f; // Convert mV to Volts
+
+        // Original formula for Rt
+        Rt = (R2 * (Vi + Vo)) / Vo;
+
+        // Original formula for T
+        T = (beta * T0) / (logf(Rt / R0) * T0 + beta);
+        final_T = T - 273.15f; // Convert Kelvin to Celsius
+
+        temperature = final_T; //Send to http as global var
+        
+        //VERBOSE
+        printf("T: %.2f °C\r\n", final_T);
+        ntc_item.value = final_T;
+        xQueueSend(adc_data_queue, &ntc_item, (TickType_t)pdMS_TO_TICKS(10)); // Send the full struct
+        xSemaphoreGive(xMutex); // Release mutex
+
+        
+        vTaskDelay(pdMS_TO_TICKS(500)); // Delay for 100ms
+    }
+}
+
+void pot_task(void *arg) {
+    
+    adc_type_data_t pot_item;
+    pot_item.type = POT_DATA_TYPE;
+    pot_item.value = 0;
+
+    // 1. Configure ADC
+    set_adc(&pot_adc_conf, &pot_adc_handle);
+
+    int raw_val = 0;
+    int voltage_mv_pot = 0;
+    float Vo_pot = 0; // Voltage from potentiometer
+
+    while (1) {
+
+        xSemaphoreTake(xMutex, portMAX_DELAY); // Acquire mutex for ADC
+        // 2. Get Raw Data
+        get_raw_data(pot_adc_handle, &raw_val);
+
+        // 3. Convert to Voltage
+        raw_to_voltage(pot_adc_handle, raw_val, &voltage_mv_pot);
+
+        Vo_pot = (float)voltage_mv_pot / 1000.0f; // Convert mV to Volts
 
 
-void rgb_event_task(void *pvParameters) {
+        //VERBOSE
+        printf("P: %.2fV\r\n", Vo_pot);
+        pot_item.value = Vo_pot;
+
+        xQueueSend(adc_data_queue, &pot_item, (TickType_t)pdMS_TO_TICKS(10)); // Send the full struct
+        xSemaphoreGive(xMutex); // Release mutex
+        
+        vTaskDelay(pdMS_TO_TICKS(450)); // Delay for 30ms
+    }
+}
+
+void rgb_pwm_task(void *pvParameters) {
 	rgb_values_t rgb_values;
+
+    rgb_pwm_set_color(&led_rgb_duty, &timer, 0, 0, 75, IS_RGB_COMMON_ANODE);
+
 	while (1) {
-		if(xQueueReceive(rgb_event_queue, &rgb_values, portMAX_DELAY)) {
+		if(xQueueReceive(rgb_event_queue, &rgb_values, (TickType_t)pdMS_TO_TICKS(10))) {
 			printf("Queue Received RGB values: Red=%d, Green=%d, Blue=%d\n", rgb_values.red_val, rgb_values.green_val, rgb_values.blue_val);
 
+            rgb_pwm_set_color(&led_rgb_duty, &timer, rgb_values.red_val, rgb_values.green_val, rgb_values.blue_val, IS_RGB_COMMON_ANODE);
+
 		}
-		
+        vTaskDelay(pdMS_TO_TICKS(10));
 	}
+}
+
+void rgb_temp_task(void *pvParameters) {    
+
+    led_color_state_t current_led_state = LED_STATE_NONE; // Initial state
+    patron_temp_t current_uart_patron;
+
+    float current_ntc_temp = 0.0f;
+    uint8_t raw_brightness_percent = 0;
+
+    rgb_pwm_set_color(&led_rgb_temp, &timer, 0, 0, 75, IS_RGB_COMMON_ANODE);
+
+    while (1) {
+        // UPDATE UART TEMP THRESHOLDS
+        if(xQueueReceive(temp_uart_queue, &current_uart_patron, (TickType_t)pdMS_TO_TICKS(10))) {
+            fill_temp_levels(current_uart_patron);
+        }     
+        
+        led_color_state_t new_led_state = LED_STATE_NONE; // Default to none
+
+        // Determine new LED state based on temperature
+        // Using exclusive ranges to avoid overlap issues
+        if (current_ntc_temp < temp_levels[2][1]) { // BLUE: Below upper limit of blue range (e.g., <20)
+            new_led_state = LED_STATE_BLUE;
+        } else if (current_ntc_temp >= temp_levels[1][0] && current_ntc_temp < temp_levels[1][1]) { // GREEN: Within green range (e.g., >=20 and <40)
+            new_led_state = LED_STATE_GREEN;
+        } else if (current_ntc_temp >= temp_levels[0][0] && current_ntc_temp <= temp_levels[0][1]) { // RED: Within red range (e.g., >=40 and <=80)
+            new_led_state = LED_STATE_RED;
+        } else {
+            // Temperature is outside all defined ranges
+            new_led_state = LED_STATE_NONE; // All LEDs off
+            printf("Temperature %.2f °C is out of defined LED ranges. LEDs off.\r\n", current_ntc_temp);
+        }
+
+        current_led_state = new_led_state; // Update the current state
+
+        switch (current_led_state) {
+            case LED_STATE_BLUE:
+                rgb_pwm_set_color(&led_rgb_temp, &timer, 0, 0, raw_brightness_percent, IS_RGB_COMMON_ANODE); // R & G off (0% brightness), B adjusted
+                break;
+            case LED_STATE_GREEN:
+                rgb_pwm_set_color(&led_rgb_temp, &timer, 0, raw_brightness_percent, 0, IS_RGB_COMMON_ANODE); // R & B off (0% brightness), G adjusted
+                break;
+            case LED_STATE_RED:
+                rgb_pwm_set_color(&led_rgb_temp, &timer, raw_brightness_percent, 0, 0, IS_RGB_COMMON_ANODE); // G & B off (0% brightness), R adjusted
+                break;
+            case LED_STATE_NONE:
+                break;
+            default:
+                rgb_pwm_set_color(&led_rgb_temp, &timer, 0, 0, 0, IS_RGB_COMMON_ANODE); // All off (0% brightness)
+                break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50)); // Small delay for the state machine
+
+
+    }
+    
 }
 
 // Read UART task
@@ -183,14 +376,14 @@ void uart_rx_task(void *arg) {
     };
     uart_param_config(UART_NUM, &uart_config);
     uart_set_pin(UART_NUM, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    uart_driver_install(UART_NUM, RD_BUF_SIZE * 2, BUF_SIZE * 2, 20, &uart_queue, 0);
+    uart_driver_install(UART_NUM, RD_BUF_SIZE * 2, BUF_SIZE * 2, 20, &uart_rx_queue, 0);
 
     printf("UART initialized.\r\n");
 
     uart_event_t event;
     while(1) {
         //wait UART RX
-        if(xQueueReceive(uart_queue, (void * )&event, 20)) {
+        if(xQueueReceive(uart_rx_queue, (void * )&event, (TickType_t)pdMS_TO_TICKS(10))) {
         
             uart_read_bytes(UART_NUM, uart_rx_buffer, event.size, portMAX_DELAY);
             uart_rx_buffer[event.size] = '\0';
@@ -198,7 +391,7 @@ void uart_rx_task(void *arg) {
             char *str_buffer = (char *)uart_rx_buffer;
 
 			patron_temp_t received_patron = patron_level_temp(str_buffer);
-			xQueueSend(temp_changes_queue, &received_patron, (TickType_t)portMAX_DELAY);
+			xQueueSend(temp_uart_queue, &received_patron, (TickType_t)pdMS_TO_TICKS(10));
             
         }
     }
@@ -207,8 +400,29 @@ void uart_rx_task(void *arg) {
 void app_main(void)
 {
 
+    //MUTEX
+    xMutex = xSemaphoreCreateMutex();
+    printf("Mutex created successfully.\r\n");
+
+    //PWM
+    pwm_timer_init(&timer);
+    printf("Timer Initialized. \r\n");
+
+    rgb_pwm_init(&led_rgb_temp, &timer); // Set IOs for PWM
+    printf("PWM rgb_temp Initialized. \r\n");
+
+
+    rgb_pwm_init(&led_rgb_duty, &timer); // Set IOs for PWM
+    printf("PWM rgb_duty Initialized. \r\n");
+
+    //ADC
+    
+
 	rgb_event_queue = xQueueCreate(3, sizeof(rgb_values_t));
-	temp_changes_queue = xQueueCreate(3, sizeof(patron_temp_t));
+	temp_uart_queue = xQueueCreate(3, 2048);
+    uart_status_queue = xQueueCreate(1, sizeof(bool));
+    adc_data_queue = xQueueCreate(10, sizeof(adc_type_data_t));
+
 
     // Initialize NVS
 	esp_err_t ret = nvs_flash_init();
@@ -223,7 +437,11 @@ void app_main(void)
 	// Start Wifi
 	wifi_app_start();
 
-	xTaskCreate(rgb_event_task, "rgb_event_task", 2048, NULL, 5, NULL);
+	xTaskCreate(rgb_pwm_task, "rgb_pwm_task", 2048, NULL, 5, NULL);
+    xTaskCreate(rgb_temp_task, "rgb_temp_task", 2048, NULL, 5, NULL);
+    xTaskCreate(uart_rx_task, "uart_rx_task", 2048, NULL, 5, NULL);
+    xTaskCreate(ntc_task, "ntc_task", 4096, NULL, 4, NULL);
+    xTaskCreate(pot_task, "pot_task", 4096, NULL, 4, NULL);
 
 }
 
